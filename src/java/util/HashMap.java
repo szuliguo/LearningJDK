@@ -379,6 +379,7 @@ public class HashMap<K,V> extends AbstractMap<K,V> implements Map<K,V>, Cloneabl
         this.loadFactor = loadFactor;
         
         // 用初始容量信息来初始化HashMap扩容阈值，该阈值后续将作为初始化哈希数组的容量依据
+        // initialCapacity 的初始化延迟到put操作里了
         this.threshold = tableSizeFor(initialCapacity);
     }
     
@@ -1371,7 +1372,8 @@ public class HashMap<K,V> extends AbstractMap<K,V> implements Map<K,V>, Cloneabl
      * we just XOR some shifted bits in the cheapest possible way to reduce systematic lossage,
      * as well as to incorporate impact of the highest bits that would otherwise never be used in index calculations because of table bounds.
      */
-    /*
+
+    /* https://www.zhihu.com/question/20733617
      * 计算key的哈希值，在这个过程中会调用key的hashCode()方法
      *
      * key是一个对象的引用（可以看成地址）
@@ -1895,6 +1897,7 @@ public class HashMap<K,V> extends AbstractMap<K,V> implements Map<K,V>, Cloneabl
      * @return the node, or null if none
      */
     /*
+     * 匹配到对应的key后，移除
      * 从HashMap中移除指定的元素，并返回刚刚移除的元素（移除失败返回null）
      *
      * matchValue 移除元素时是否需要考虑value的匹配问题
