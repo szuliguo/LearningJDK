@@ -74,6 +74,11 @@ import java.util.stream.Stream;
 import jdk.internal.misc.Unsafe;
 
 /**
+ * 参考:
+ * https://kkewwei.github.io/elasticsearch_learning/2017/11/05/ConcurrentHashMap-put%E8%BF%87%E7%A8%8B%E4%BB%8B%E7%BB%8D/
+ * https://crossoverjie.top/2018/07/23/java-senior/ConcurrentHashMap/
+ *
+ *
  * A hash table supporting full concurrency of retrievals and
  * high expected concurrency for updates. This class obeys the
  * same functional specification as {@link java.util.Hashtable}, and
@@ -270,7 +275,32 @@ import jdk.internal.misc.Unsafe;
  * 不同之处在于，ConcurrentHashMap是线程安全的，其中用到了无锁编程
  */
 public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V>, Serializable {
-    
+
+
+    /**
+     * 1. LOAD_FACTOR: 负载因子, 默认75%, 当table使用率达到75%时, 为减少table的hash碰撞, tabel长度将扩容一倍。负载因子计算: 元素总个数%table.lengh
+     *
+     * 2. TREEIFY_THRESHOLD: 默认8, 当链表长度达到8时, 将结构转变为红黑树。
+     *
+     * 3. UNTREEIFY_THRESHOLD: 默认6, 红黑树转变为链表的阈值。
+     *
+     * 4. MIN_TRANSFER_STRIDE: 默认16, table扩容时, 每个线程最少迁移table的槽位个数。
+     *
+     * 5. MOVED: 值为-1, 当Node.hash为MOVED时, 代表着table正在扩容
+     *
+     * 6. TREEBIN, 置为-2, 代表此元素后接红黑树。
+     *
+     * 7. nextTable: table迁移过程临时变量, 在迁移过程中将元素全部迁移到nextTable上。
+     *
+     * 8. sizeCtl: 用来标志table初始化和扩容的,不同的取值代表着不同的含义:
+     *  0: table还没有被初始化
+     *  -1: table正在初始化
+     *  小于-1: 实际值为resizeStamp(n)<<RESIZE_STAMP_SHIFT+2, 表明table正在扩容
+     *  大于0: 初始化完成后, 代表table最大存放元素的个数, 默认为0.75*n
+     *
+     * 9. ForwardingNode: 一个特殊的Node节点, 其hashcode=MOVED, 代表着此时table正在做扩容操作。扩容期间, 若table某个元素为null, 那么该元素设置为ForwardingNode, 当下个线程向这个元素插入数据时, 检查hashcode=MOVED, 就会帮着扩容。
+     */
+
     /*
      * Overview:
      *
@@ -843,6 +873,10 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
     /*▼ 取值 ████████████████████████████████████████████████████████████████████████████████┓ */
     
     /**
+     * 步骤:
+     * 1.  定位目标hash桶，通过tabAt方法valatile读，读取hash桶的头结点
+     * 2.  特殊节点（红黑树，已经迁移的节点（ForwardingNode)等
+     * 3.  遍历node链表（e.next也是valitle变量）
      * Returns the value to which the specified key is mapped,
      * or {@code null} if this map contains no mapping for the key.
      *
@@ -861,16 +895,20 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
         K ek;
         
         int h = spread(key.hashCode());
-        
+
+        //定位目标hash桶，通过tabAt方法valatile读，读取hash桶的头结点
         if((tab = table) != null && (n = tab.length)>0 && (e = tabAt(tab, (n - 1) & h)) != null) {
+            //第一个节点就是要找的元素
             if((eh = e.hash) == h) {
                 if((ek = e.key) == key || (ek != null && key.equals(ek))) {
                     return e.val;
                 }
+             //特殊节点（红黑树，已经迁移的节点（ForwardingNode)等
             } else if(eh<0) {
                 return (p = e.find(h, key)) != null ? p.val : null;
             }
-            
+
+            //遍历node链表（e.next也是valitle变量）
             while((e = e.next) != null) {
                 if(e.hash == h && ((ek = e.key) == key || (ek != null && key.equals(ek)))) {
                     return e.val;
@@ -3046,6 +3084,11 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
     /* ---------------- Static utilities -------------- */
     
     /**
+     * 根据spread确定key-value的hash值, hash计算过程如下:
+     * (h ^ (h >>> 16)) & HASH_BITS, h=key.hashCode(), HASH_BITS=0x7fffffff,
+     * 由此可见, 计算出来的hash>0一定成立,
+     * 若node.hash<0是, -1(Moved)代表table正在扩容, -2(TREEBIN)代表此元素后接红黑树
+     *
      * Spreads (XORs) higher bits of hash to lower and also forces top
      * bit to 0. Because the table uses power-of-two masking, sets of
      * hashes that vary only in bits above the current mask will
@@ -3165,9 +3208,23 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
     // Original (since JDK1.2) Map methods
     
     /*
+     * 1. 根据spread确定key-value的hash值, hash计算过程如下: (h ^ (h >>> 16)) & HASH_BITS, h=key.hashCode(), HASH_BITS=0x7fffffff,
+     * 由此可见, 计算出来的hash>0一定成立, 若node.hash<0是, -1(Moved)代表table正在扩容, -2(TREEBIN)代表此元素后接红黑树
+     * 2. 检查table是否初始化, 若没有初始化,则开始初始化initTable()。 这里可以看出ConcurrentHashMap使用懒性初始化, 只有在真正插入数据时候才进行扩容。
+     * 3. 根据i = (n - 1) & hash))确定需要插入table的位置i:
+     * (1) 若table[i]没有元素, 则将key-value存放进去。
+     * (2) 若table[i].hash为MOVED, 那么说明table正在进行扩容, 则通过helpTransfer()进行扩容
+     * (3) 否则开始真正插入数据, 插入数据前, 先将table[i]锁住, 插入数据前, 检查table[i].hash, 若大于0, 说明此元素后接的是链表,
+     *  或者是个红黑树。 链表插入采取尾插法, 比较简单;
+     * (4) 在链表插入时, 统计当前链表长度, 若长度超过TREEIFY_THRESHOLD(默认值为8), 则需要将链表转变为红黑树结构
+     * (5) 修改table存放所有元素个数、检查table是否需要扩容等, 详见addCount。
+     * 这里感觉代码有些问题, 插入任何一个元素, 无论插在table元素上、还是链表或者红黑树上, 都对table容量增加了1, 增加table容量的结果就是可能导致table扩容。
+     * 实际上插入链表或者红黑树, 并不会增加table的负载, 这两种情况下, 不应该增加table的负载、而去检查扩容。
      * 向当前Map中存入新的元素，并返回旧元素
      *
      * onlyIfAbsent 是否需要维持原状（不覆盖旧值）
+     * true:表示需要维护原状；
+     * false: 表示可以覆盖
      */
     final V putVal(K key, V value, boolean onlyIfAbsent) {
         if(key == null || value == null) {
@@ -3194,8 +3251,11 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
             
             int len;        // 哈希数组容量
             int i;          // 当前key在哈希数组上的索引
-            
+
+            // 检查table是否初始化, 若没有初始化,则开始初始化initTable()。
+            // 这里可以看出ConcurrentHashMap使用懒性初始化, 只有在真正插入数据时候才进行扩容。
             // 如果哈希数组还未初始化，或者容量无效，则需要初始化一个哈希数组
+            // 初始化哈希数组后，需要继续while循环
             if(tab == null || (len = tab.length) == 0) {
                 // 初始化哈希数组
                 tab = initTable();
@@ -3240,7 +3300,8 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
                  */
             } else {
                 V oldVal = null;
-                
+
+                // 注意：这里是对table[i]进行锁住
                 // 对已有元素进行搜索，尝试插入新结点(尾插)
                 synchronized(f) {
                     // 如果tab[i]==f，则代表当前待插入状态仍然可信
@@ -3595,13 +3656,19 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
     }
     
     /**
+     * 步骤:
+     * 1. 检查sizeCtl, 若发现<0, 那么说明已经有线程正在初始化, 本线程先放弃cpu使用等待初始化完成
+     * 2. 若本线程是第一个初始化table, 那么原子操作, 将sizeCtl设置为-1, 表明有线程正在对table正在初始化。
+     * 3. 初始化table
+     * 4. 设置sizeCtl= table.length*0.75, 规定了table最大存放元素的个数
+     *
      * Initializes table, using the size recorded in sizeCtl.
      */
     // 初始化哈希数组
     private final Node<K, V>[] initTable() {
         Node<K, V>[] tab;
         
-        // 直到哈希数组初始化完成后，循环结束
+        //只要没有成功，就一定重新尝试
         while((tab = table) == null || tab.length == 0) {
             
             int sc = sizeCtl;
@@ -3611,6 +3678,7 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
                 Thread.yield(); // lost initialization race; just spin
                 
                 // 原子地将sizeCtl字段更新为-1，代表当前Map进入初始化阶段
+                // this 表示此对象; SIZECTL 表示要更新的字段；sc 表示要更新字段的原来的值； -1 表示要更新的值
             } else if(U.compareAndSetInt(this, SIZECTL, sc, -1)) {
                 try {
                     if((tab = table) == null || tab.length == 0) {
@@ -3626,6 +3694,7 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
                         table = tab = newTable;
                         
                         // 更新为扩容阈值：0.75*容量
+                        // len - (len >>> 2) --> len - len * 0.25
                         sc = len - (len >>> 2);
                     }
                 } finally {
