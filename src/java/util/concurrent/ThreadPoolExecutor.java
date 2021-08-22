@@ -320,6 +320,15 @@ import java.util.concurrent.locks.ReentrantLock;
  * @author Doug Lea
  */
 /*
+ *  动态线程池:
+ *  https://github.com/Snailclimb/JavaGuide/blob/master/docs/java/multi-thread/java%E7%BA%BF%E7%A8%8B%E6%B1%A0%E5%AD%A6%E4%B9%A0%E6%80%BB%E7%BB%93.md
+ *  自定义拒绝策略:
+ *  实现接口 RejectedExecutionHandler
+ *
+ *   线程池预热: prestartAllCoreThreads
+ *   核心线程被回收: allowCoreThreadTimeOut: true
+ *
+ *
  * ThreadPoolExecutor通常被简称为【线程池】，虽然与ForkJoinPool是兄弟关系，但两者的侧重点完全不同
  *
  * ThreadPoolExecutor由两部分组成：线程池(pool)与阻塞队列(queue)
@@ -2072,6 +2081,16 @@ retry:
     }
     
     /**
+     *
+     * 在运行期线程池使用方调用此方法设置corePoolSize之后，
+     * 线程池会直接覆盖原来的corePoolSize值，并且基于当前值和原始值的比较结果采取不同的处理策略。
+     *
+     * 对于当前值小于当前工作线程数的情况，说明有多余的worker线程，此时会向当前idle的worker线程发起中断请求以实现回收，
+     * 多余的worker在下次idel的时候也会被回收；
+     *
+     * 对于当前值大于原始值且当前队列中有待执行任务，则线程池会创建新的worker线程来执行队列任务
+     *
+     *
      * Sets the core number of threads.
      * This overrides any value set in the constructor.
      * If the new value is smaller than the current value, excess existing threads will be terminated when they next become idle.
@@ -2112,7 +2131,7 @@ retry:
             int k = Math.min(delta, workQueue.size());
     
             // 添加【N】型Worker到线程池
-            while(k-->0 && addWorker(null, true)) {
+            while(k-- > 0 && addWorker(null, true)) {
                 // 如果阻塞队列中已经没有阻塞的任务了，那么就自然也不再需要增加【N】型Worker了
                 if(workQueue.isEmpty()) {
                     break;
@@ -2134,6 +2153,10 @@ retry:
     }
     
     /**
+     * 1. 首先是参数合法性校验。
+     * 2. 然后用传递进来的值，覆盖原来的值。
+     * 3. 判断工作线程是否是大于最大线程数，如果大于，则对空闲线程发起中断请求。
+     *
      * Sets the maximum allowed number of threads. This overrides any
      * value set in the constructor. If the new value is smaller than
      * the current value, excess existing threads will be
