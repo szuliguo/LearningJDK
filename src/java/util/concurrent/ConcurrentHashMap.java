@@ -77,6 +77,8 @@ import jdk.internal.misc.Unsafe;
  * 参考:
  * https://kkewwei.github.io/elasticsearch_learning/2017/11/05/ConcurrentHashMap-put%E8%BF%87%E7%A8%8B%E4%BB%8B%E7%BB%8D/
  * https://crossoverjie.top/2018/07/23/java-senior/ConcurrentHashMap/
+ * jdk7和jdk8的区别
+ * https://www.jianshu.com/p/5bc70d9e5410
  *
  *
  * A hash table supporting full concurrency of retrievals and
@@ -875,7 +877,7 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
     /**
      * 步骤:
      * 1.  定位目标hash桶，通过tabAt方法valatile读，读取hash桶的头结点
-     * 2.  特殊节点（红黑树，已经迁移的节点（ForwardingNode)等
+     * 2.  特殊节点（红黑树，已经迁移的节点（ForwardingNode)等。eh的hash小于0，表示的是红黑树
      * 3.  遍历node链表（e.next也是valitle变量）
      * Returns the value to which the specified key is mapped,
      * or {@code null} if this map contains no mapping for the key.
@@ -3212,7 +3214,7 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
      * 由此可见, 计算出来的hash>0一定成立, 若node.hash<0是, -1(Moved)代表table正在扩容, -2(TREEBIN)代表此元素后接红黑树
      * 2. 检查table是否初始化, 若没有初始化,则开始初始化initTable()。 这里可以看出ConcurrentHashMap使用懒性初始化, 只有在真正插入数据时候才进行扩容。
      * 3. 根据i = (n - 1) & hash))确定需要插入table的位置i:
-     * (1) 若table[i]没有元素, 则将key-value存放进去。
+     * (1) 若table[i]没有元素, 则将key-value存放进去。通过CAS进行更新
      * (2) 若table[i].hash为MOVED, 那么说明table正在进行扩容, 则通过helpTransfer()进行扩容
      * (3) 否则开始真正插入数据, 插入数据前, 先将table[i]锁住, 插入数据前, 检查table[i].hash, 若大于0, 说明此元素后接的是链表,
      *  或者是个红黑树。 链表插入采取尾插法, 比较简单;
@@ -3379,6 +3381,13 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
     }
     
     /**
+     * 参数value:当 value==null 时 ，删除节点 。否则 更新节点的值为value
+     * 参数cv:一个期望值， 当 map[key].value 等于期望值cv  或者 cv==null的时候 ，删除节点，或者更新节点的值
+     *
+     *
+     *
+     *
+     *
      * Implementation for the four public remove/replace methods:
      * Replaces node value with v, conditional upon match of cv if non-null.
      * If resulting value is null, delete.
@@ -3414,8 +3423,9 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
                 
                 synchronized (f) {
                     // 双重检查
+                    //cas获取tab[i],如果此时tab[i]!=f,说明其他线程修改了tab[i]。回到for循环开始处，重新执行
                     if (tabAt(tab, i) == f) {
-                        // 处理普通结点
+                        // node链表
                         if (fh >= 0) {
                             validated = true;
                             
@@ -3431,7 +3441,11 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
                                 if (e.hash == hash && ((ek = e.key) == key || (ek != null && key.equals(ek)))) {
                                     // 旧值
                                     V ev = e.val;
-                                    
+                                    //cv参数代表期望值
+                                    //cv==null:表示直接更新value/删除节点
+                                    //cv不为空，则只有在key的oldValue等于期望值的时候，才更新value/删除节点
+
+                                    //符合更新value或者删除节点的条件
                                     if (cv == null || cv == ev || (ev != null && cv.equals(ev))) {
                                         oldVal = ev;
                                         
@@ -3454,10 +3468,11 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
                                     
                                     break;
                                 }
-                                
+                                //当前节点不是目标节点，继续遍历下一个节点
                                 pred = e;
                                 
                                 if ((e = e.next) == null) {
+                                    //到达链表尾部，依旧没有找到，跳出循环
                                     break;
                                 }
                             }// while(true)
@@ -3489,6 +3504,7 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
                 }// synchronized
                 
                 // 如果处理过结点，则需要进一步验证
+                //如果删除了节点，更新size
                 if (validated) {
                     if (oldVal != null) {
                         if (newValue == null) {
@@ -3821,6 +3837,26 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
     }
     
     /**
+     *第一步：计算出每个线程每次可以处理的个数，根据 Map 的长度，计算出每个线程（CPU）需要处理的桶（table数组的个数），
+     * 默认每个线程每次处理 16 个桶，如果小于 16 个，则强制变成 16 个桶。
+     *
+     * 第二步：对 nextTab 初始化，如果传入的新 table nextTab 为空，则对 nextTab 初始化，默认是原 table 的两倍
+     *
+     * 第三步：引入 ForwardingNode、advance、finishing 变量来辅助扩容，ForwardingNode 表示该节点已经处理过，
+     * 不需要在处理，advance 表示该线程是否可以下移到下一个桶（true：表示可以下移），finishing 表示是否结束扩容（true：结束扩容，false：未结束扩容） ，具体的逻辑就不说了
+     *
+     * 第四步：跳过一些其他细节，直接到数据迁移这一块，在数据转移的过程中会加 synchronized 锁，
+     * 锁住头节点，同步化操作，防止 putVal 的时候向链表插入数据
+     *
+     * 第五步：进行数据迁移，如果这个桶上的节点是链表或者红黑树，则会将节点数据分为低位和高位，
+     * 计算的规则是通过该节点的 hash 值跟为扩容之前的 table 容器长度进行位运算（&），如果结果为 0 ，则将数据放在新表的低位（当前 table 中为 第 i 个位置，在新表中还是第 i 个位置），结果不为 0 ，则放在新表的高位
+     * （当前 table 中为第 i 个位置，在新表中的位置为 i + 当前 table 容器的长度）。
+     *
+     * 第六步：如果桶挂载的是红黑树，不仅需要分离出低位节点和高位节点，
+     * 还需要判断低位和高位节点在新表以链表还是红黑树的形式存放。
+     *
+     *
+     *
      * Moves and/or copies the nodes in each bin to new table. See above for explanation.
      */
     // 在哈希数组的扩容过程中进行数据迁移
@@ -3828,36 +3864,44 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
         int n = tab.length;
         
         int stride = (NCPU>1) ? (n >>> 3) / NCPU : n;
-        
+
+        // 多线程扩容，每核处理的量小于16，则强制赋值16
         if(stride<MIN_TRANSFER_STRIDE) {
             stride = MIN_TRANSFER_STRIDE; // subdivide range
         }
-        
+
+        // nextTab 为空，先实例化一个新的数组
         if(nextTab == null) {            // initiating
             try {
                 @SuppressWarnings("unchecked")
+                // 新数组的大小是原来的两倍
                 Node<K, V>[] nt = (Node<K, V>[]) new Node<?, ?>[n << 1];
                 nextTab = nt;
             } catch(Throwable ex) {      // try to cope with OOME
                 sizeCtl = Integer.MAX_VALUE;
                 return;
             }
-            
+            // 更新成员变量
             nextTable = nextTab;
+            // 更新转移下标，就是 老的 tab 的 length
             transferIndex = n;
         }
-        
+
+        // 创建一个 fwd 节点，用于占位。当别的线程发现这个槽位中是 fwd 类型的节点，则跳过这个节点。
         ForwardingNode<K, V> fwd = new ForwardingNode<K, V>(nextTab);
         
         int nextn = nextTab.length;
         
         boolean advance = true;
-        
+
+        // 完成状态，如果是 true，表示扩容结束
         boolean finishing = false; // to ensure sweep before committing nextTab
         
         int i = 0;
+        // 该线程此次可以处理的区间的最小下标，超过这个下标，就需要重新领取区间或者结束扩容
         int bound = 0;
-        
+
+        // 死循环,i 表示下标，bound 表示当前线程可以处理的当前桶区间最小下标
         while(true) {
             Node<K, V> f;
             int fh;
@@ -4224,9 +4268,15 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V> implements Concur
      */
     // ConcurrentHashMap中的普通结点信息，每个Node代表一个元素，里面包含了key和value的信息
     static class Node<K, V> implements Map.Entry<K, V> {
+        /**
+         Node节点的hash值和key的hash值相同
+         TreeNode节点的hash值
+         **/
         final int hash;
         final K key;
+        //volatile确保了val的内存可见性
         volatile V val;
+        //volatile确保了next的内存可见性
         volatile Node<K, V> next;
         
         Node(int hash, K key, V val) {
