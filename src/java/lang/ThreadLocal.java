@@ -75,6 +75,8 @@ import java.util.function.Supplier;
  * @since 1.2
  */
 /*
+ * https://github.com/Snailclimb/JavaGuide/blob/master/docs/java/multi-thread/%E4%B8%87%E5%AD%97%E8%AF%A6%E8%A7%A3ThreadLocal%E5%85%B3%E9%94%AE%E5%AD%97.md
+ *
  * 线程局部缓存：为线程缓存数据，将数据本地化（脱离共享）
  *
  * 原理：
