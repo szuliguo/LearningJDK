@@ -510,6 +510,9 @@ public class ThreadLocal<T> {
                 }
                 
                 /*
+                 * key为null，表明此数据key值已经被垃圾回收掉了，此时就会执行replaceStaleEntry()方法
+                 * 以index为起点开始遍历，进行探测式数据清理工作。
+                 *
                  * 如果当前位置未找到匹配的ThreadLocal，就一直遍历Entry（由于哈希值存在碰撞问题，所以可能初次计算出的哈希值没法用）
                  * 向后遍历的过程中，会出现以下情形：
                  * 1. 找到了匹配的ThreadLocal，那么执行上面的if语句，并退出
@@ -825,7 +828,8 @@ public class ThreadLocal<T> {
             // We clean out whole runs at a time to avoid continual incremental rehashing due
             // to garbage collector freeing up refs in bunches (i.e., whenever the collector runs).
             int slotToExpunge = staleSlot;
-            
+
+            // 向前遍历
             // 从staleSlot开始往前遍历一段连续的元素，找出最早出现垃圾值的位置
             for(int i = prevIndex(staleSlot, len); (e = tab[i]) != null; i = prevIndex(i, len)) {
                 // 遇到了垃圾值

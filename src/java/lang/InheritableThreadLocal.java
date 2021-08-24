@@ -26,6 +26,11 @@
 package java.lang;
 
 /**
+ *
+ * 原理:
+ * https://www.jianshu.com/p/94ba4a918ff5
+ *
+ *
  * This class extends {@code ThreadLocal} to provide inheritance of values
  * from parent thread to child thread: when a child thread is created, the
  * child receives initial values for all inheritable thread-local variables
