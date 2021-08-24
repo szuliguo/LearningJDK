@@ -300,7 +300,10 @@ import java.util.concurrent.TimeUnit;
  *
  * @since 1.5
  * @author Doug Lea
+ *
  */
+
+// 参考: https://javadoop.com/post/AbstractQueuedSynchronizer
 // 同步队列，是一个带头结点的双向链表，用于实现锁的语义
 public abstract class AbstractQueuedSynchronizer extends AbstractOwnableSynchronizer implements Serializable {
     
@@ -318,18 +321,22 @@ public abstract class AbstractQueuedSynchronizer extends AbstractOwnableSynchron
      * If head exists, its waitStatus is guaranteed not to be
      * CANCELLED.
      */
-    private transient volatile Node head;   // 【|同步队列|】的头结点
+    // 头结点，你直接把它当做 当前持有锁的线程 可能是最好理解的
+    private transient volatile Node head;
     
     /**
      * Tail of the wait queue, lazily initialized.  Modified only via
      * method enq to add new wait node.
      */
-    private transient volatile Node tail;   // 【|同步队列|】的尾结点
+    // 阻塞的尾节点，每个新的节点进来，都插入到最后，也就形成了一个链表
+    private transient volatile Node tail;
     
     /**
      * The synchronization state.
      */
-    // 重入锁计数/许可证数量，在不同的锁中，使用方式有所不同
+    // 代表当前持有独占锁的线程，举个最重要的使用例子，因为锁可以重入
+    // reentrantLock.lock()可以嵌套调用多次，所以每次用这个来判断当前线程是否已经拥有了锁
+    // if (currentThread == getExclusiveOwnerThread()) {state++}
     private volatile int state;
     
     // VarHandle mechanics
@@ -2177,18 +2184,25 @@ public abstract class AbstractQueuedSynchronizer extends AbstractOwnableSynchron
     // 【|同步队列|】或【|条件队列|】的结点
     static final class Node {
         /** Marker to indicate a node is waiting in shared mode */
-        static final Node SHARED = new Node();  // 【共享】模式
+        // 标识节点当前在共享模式下
+        static final Node SHARED = new Node();
         /** Marker to indicate a node is waiting in exclusive mode */
-        static final Node EXCLUSIVE = null;     // 【独占】模式
-        
+        // 标识节点当前在独占模式下
+        static final Node EXCLUSIVE = null;
+
+
+        // ======== 下面的几个int常量是给waitStatus用的 ===========
         /** waitStatus value to indicate thread has cancelled. */
         /*
          * 该标记指示结点应当被取消，不再参与排队
+         * 线程取消了争抢这个锁
          * 如果在线程阻塞期间发生异常的话，会为其所在的结点设置此标记
          */
         static final int CANCELLED = 1;
         /** waitStatus value to indicate successor's thread needs unparking. */
         /*
+         * 官方的描述是，其表示当前node的后继节点对应的线程需要被唤醒
+         *
          * 该标记指示结点在等待一个信号，即说明此结点正处于阻塞状态，需要被唤醒
          * 如果一个结点处于阻塞，那么会在它的【前驱】上设置Node.SIGNAL标记
          * 每个处于阻塞但即将执行的结点（不考虑插队），它一定位于头结点之后，
@@ -2289,6 +2303,7 @@ public abstract class AbstractQueuedSynchronizer extends AbstractOwnableSynchron
          * construction and nulled out after use.
          */
         // node内存储的线程引用，表面上是node在排队，实际上是thread在排队
+        // 这个就是线程本尊
         volatile Thread thread;
         
         /**
