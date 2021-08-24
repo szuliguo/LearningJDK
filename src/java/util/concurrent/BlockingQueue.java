@@ -178,6 +178,21 @@ import java.util.Queue;
  * @since 1.5
  */
 /*
+ * BlockingQueue 的实现都是线程安全的，但是批量的集合操作如 addAll, containsAll, retainAll 和 removeAll  不一定是原子操作。
+ * 如 addAll(c) 有可能在添加了一些元素后中途抛出异常，此时 BlockingQueue 中已经添加了部分元素，这个是允许的，取决于具体的实现。
+ * 参考:
+ * https://javadoop.com/post/java-concurrent-queue
+ *
+ * 总结:
+ *
+ * ArrayBlockingQueue 底层是数组，有界队列，如果我们要使用生产者-消费者模式，这是非常好的选择。
+
+ * LinkedBlockingQueue 底层是链表，可以当做无界和有界队列来使用，所以大家不要以为它就是无界队列。
+
+ * SynchronousQueue 本身不带有空间来存储任何元素，使用上可以选择公平模式和非公平模式。
+
+ * PriorityBlockingQueue 是无界队列，基于数组，数据结构为二叉堆，数组第一个也是树的根节点总是最小值。
+ *
  * 单向阻塞队列
  *
  * 主要特性：

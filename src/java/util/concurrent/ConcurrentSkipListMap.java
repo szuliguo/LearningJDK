@@ -112,6 +112,12 @@ import java.util.function.Predicate;
  */
 
 /*
+ * 参考:
+ * https://github.com/szuliguo/JavaGuide/blob/master/docs/java/multi-thread/%E5%B9%B6%E5%8F%91%E5%AE%B9%E5%99%A8%E6%80%BB%E7%BB%93.md
+ *
+ * 使用跳表实现 Map 和使用哈希算法实现 Map 的另外一个不同之处是：哈希并不会保存元素的顺序，而跳表内所有的元素都是排序的。
+ * 因此在对跳表进行遍历时，你会得到一个有序的结果。所以，如果你的应用需要有序性，那么跳表就是你不二的选择。
+ * JDK 中实现这一数据结构的类是 ConcurrentSkipListMap。
  * 跳表-映射，利用跳表来存储键值对集合。key与value均不能为null
  *
  * 跳表首先是一种有序链表，至于是升序还是降序，则取决于应用的外部比较器comparator
