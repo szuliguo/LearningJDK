@@ -170,6 +170,7 @@ public class ReentrantLock implements Lock, Serializable {
     // 申请独占锁，允许阻塞带有中断标记的线程（不一定成功）
     public void lock() {
         // 生产一张许可证
+        // acquire() 方法继承自父类AQS
         sync.acquire(1);
     }
     
@@ -759,24 +760,25 @@ public class ReentrantLock implements Lock, Serializable {
             
             return false;
         }
-        
-        // 申请一次公平锁，返回值代表锁是否申请成功
+
+        // 尝试直接获取锁，返回值是boolean，代表是否获取到锁
+        // 返回true：1.没有线程在等待锁；2.重入锁，线程本来就持有锁，也就可以理所当然可以直接获取
         final boolean fairTryAcquire(int acquires) {
             // 获取申请锁的线程
             final Thread current = Thread.currentThread();
             
             // 当前许可证数量
             int c = getState();
-            
-            // 如果锁没有被任何线程占用
+
+            // 虽然此时此刻锁是可以用的，但是这是公平锁，既然是公平，就得讲究先来后到，
+            // 看看有没有别人在队列中等了半天了
             if(c == 0) {
-                /* 发现锁空闲时，需要检查有没有其他线程在排队，如果没有其他人在队首，才尝试抢锁，这也是"公平"所在 */
-                
-                // 判断【|同步队列|】的队头是否还有其他（非当前线程）的线程在排队
                 if(!hasQueuedPredecessors()) {
-                    // 尝试更新许可证数量为acquires，返回true代表更新成功，即成功抢到了锁
+                    // 如果没有线程在等待，那就用CAS尝试一下，成功了就获取到锁了，
+                    // 不成功的话，只能说明一个问题，就在刚刚几乎同一时刻有个线程抢先了 =_=
+                    // 因为刚刚还没人的，我判断过了
                     if(compareAndSetState(0, acquires)){
-                        // 设置当前线程为<占有者线程>
+                        // 到这里就是获取到锁了，标记一下，告诉大家，现在是我占用了锁
                         setExclusiveOwnerThread(current);
                         return true;
                     }

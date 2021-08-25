@@ -392,8 +392,13 @@ public abstract class AbstractQueuedSynchronizer extends AbstractOwnableSynchron
      *            can represent anything you like.
      */
     // 申请独占锁，允许阻塞带有中断标记的线程（会先将其标记清除）
+    // 如果tryAcquire(arg) 返回true, 也就结束了。
+    // 否则，acquireQueued方法会将线程压到队列中
+
     public final void acquire(int arg) {
-        // 尝试申请独占锁
+        // 首先调用tryAcquire(1)一下，名字上就知道，这个只是试一试
+        // 因为有可能直接就成功了呢，也就不需要进队列排队了，
+        // 对于公平锁的语义就是：本来就没人持有锁，根本没必要进队列等待(又是挂起，又是等待被唤醒的)
         if(!tryAcquire(arg)){
             /*
              * 如果当前线程没有申请到独占锁，则需要去排队
@@ -453,7 +458,12 @@ public abstract class AbstractQueuedSynchronizer extends AbstractOwnableSynchron
      *
      * @return {@code true} if interrupted while waiting
      */
-    // 当node进入排队后再次尝试申请锁，如果还是失败，则可能进入阻塞
+
+    // 下面这个方法，参数node，经过addWaiter(Node.EXCLUSIVE)，此时已经进入阻塞队列
+    // 注意一下：如果acquireQueued(addWaiter(Node.EXCLUSIVE), arg))返回true的话，
+    // 意味着上面这段代码将进入selfInterrupt()，所以正常情况下，下面应该返回false
+    // 这个方法非常重要，应该说真正的线程挂起，然后被唤醒后去获取锁，都在这个方法里了
+
     final boolean acquireQueued(final Node node, int arg) {
         
         // 记录当前线程从阻塞中醒来时的中断标记（阻塞(park)期间也可设置中断标记）
@@ -472,6 +482,14 @@ public abstract class AbstractQueuedSynchronizer extends AbstractOwnableSynchron
                 final Node p = node.predecessor();
                 
                 // 如果node结点目前排在了队首，则node线程有权利申请锁
+                // p == head 说明当前节点虽然进到了阻塞队列，但是是阻塞队列的第一个，因为它的前驱是head
+                // 注意，阻塞队列不包含head节点，head一般指的是占有锁的线程，head后面的才称为阻塞队列
+                // 所以当前节点可以去试抢一下锁
+                // 这里我们说一下，为什么可以去试试：
+                // 首先，它是队头，这个是第一个条件，其次，当前的head有可能是刚刚初始化的node，
+                // enq(node) 方法里面有提到，head是延时初始化的，而且new Node()的时候没有设置任何线程
+                // 也就是说，当前的head不属于任何一个线程，所以作为队头，可以去试一试，
+                // tryAcquire已经分析过了, 忘记了请往前看一下，就是简单用CAS试操作一下state
                 if(p == head) {
                     // 再次尝试申请锁
                     if(tryAcquire(arg)){
@@ -1133,6 +1151,7 @@ public abstract class AbstractQueuedSynchronizer extends AbstractOwnableSynchron
      * to calling unparkSuccessor of head if it needs signal.)
      */
     /*
+     * // 调用这个方法的时候，state == 0
      * 为共享结点设置Node.PROPAGATE标记，或唤醒其下一个结点
      *
      * 在setHeadAndPropagate()中被调用时，
@@ -1154,7 +1173,11 @@ public abstract class AbstractQueuedSynchronizer extends AbstractOwnableSynchron
          */
         for(; ; ) {
             Node h = head;
-            
+
+            // 1. h == null: 说明阻塞队列为空
+            // 2. h == tail: 说明头结点可能是刚刚初始化的头节点，
+            //   或者是普通线程节点，但是此节点既然是头节点了，那么代表已经被唤醒了，阻塞队列没有其他节点了
+            // 所以这两种情况不需要进行唤醒后继节点
             // 如果队列中已经没有排队者，则到下面直接退出
             if(h != null && h != tail) {
                 int ws = h.waitStatus;
@@ -1169,6 +1192,7 @@ public abstract class AbstractQueuedSynchronizer extends AbstractOwnableSynchron
                     unparkSuccessor(h);
                 } else {
                     // 尝试设置Node.PROPAGATE标记
+                    // 这个 CAS 失败的场景是：执行到这里的时候，刚好有一个节点入队，入队会将这个 ws 设置为 -1
                     if(ws == 0) {
                         if(!h.compareAndSetWaitStatus(0, Node.PROPAGATE)){
                             continue;                // loop on failed CAS
@@ -1176,7 +1200,9 @@ public abstract class AbstractQueuedSynchronizer extends AbstractOwnableSynchron
                     }
                 }
             }
-            
+
+            // 如果到这里的时候，前面唤醒的线程已经占领了 head，那么再循环
+            // 否则，就是 head 没变，那么退出循环，
             // loop if head changed
             if(h == head){
                 break;
@@ -1842,14 +1868,17 @@ public abstract class AbstractQueuedSynchronizer extends AbstractOwnableSynchron
     private Node enq(Node node) {
         for(; ; ) {
             Node oldTail = tail;
+            // tail!=null => 队列不为空(tail==head的时候，其实队列是空的，不过不管这个吧)
             if(oldTail != null) {
-                // 设置node的前驱为oldTail
+                // 将当前的队尾节点，设置为自己的前驱
                 node.setPrevRelaxed(oldTail);
-                
-                // 更新队尾游标指向node
+
+                // 用CAS把自己设置为队尾, 如果成功后，tail == node 了，这个节点成为阻塞队列新的尾巴
                 if(compareAndSetTail(oldTail, node)) {
-                    // 链接旧的队尾与node，形成一个双向链表
+                    // 进到这里说明设置成功，当前node==tail, 将自己与之前的队尾相连，
+                    // 上面已经有 node.prev = pred，加上下面这句，也就实现了和之前的尾节点双向连接了
                     oldTail.next = node;
+                    // 线程入队了，可以返回了
                     return oldTail;
                 }
             } else {
@@ -1978,7 +2007,7 @@ public abstract class AbstractQueuedSynchronizer extends AbstractOwnableSynchron
     /*
      * 抢锁失败时，尝试为node的前驱设置阻塞标记
      *
-     * 每个结点的阻塞标记设置在其前驱上，原因是：
+     * 每个结点的阻塞标记设置在其前驱上，原因是:
      * 每个正在活动的结点都将成为头结点，当活动的结点（头结点）执行完之后，
      * 需要根据自身上面的阻塞标记，以确定要不要唤醒后续的结点
      */
@@ -1991,8 +2020,12 @@ public abstract class AbstractQueuedSynchronizer extends AbstractOwnableSynchron
             /* This node has already set status asking a release to signal it, so it can safely park. */
             return true;
         }
-        
-        // 如果node前驱的状态被标记为取消，则顺着其前驱向前遍历，将紧邻的待取消结点连成一片
+
+        // 前驱节点 waitStatus大于0 ，之前说过，大于0 说明前驱节点取消了排队。
+        // 这里需要知道这点：进入阻塞队列排队的线程会被挂起，而唤醒的操作是由前驱节点完成的。
+        // 所以下面这块代码说的是将当前节点的prev指向waitStatus<=0的节点，
+        // 简单说，就是为了找个好爹，因为你还得依赖它来唤醒呢，如果前驱节点取消了排队，
+        // 找前驱节点的前驱节点做爹，往前遍历总能找到一个好爹的
         if(ws>0) {
             /* Predecessor was cancelled. Skip over predecessors and indicate retry. */
             do {
@@ -2007,6 +2040,11 @@ public abstract class AbstractQueuedSynchronizer extends AbstractOwnableSynchron
              * Caller will need to retry to make sure it cannot acquire before parking.
              */
             // 更新node前驱的状态为Node.SIGNAL，即使node陷入阻塞
+            // 仔细想想，如果进入到这个分支意味着什么
+            // 前驱节点的waitStatus不等于-1和1，那也就是只可能是0，-2，-3
+            // 在我们前面的源码中，都没有看到有设置waitStatus的，所以每个新的node入队时，waitStatu都是0
+            // 正常情况下，前驱节点是之前的 tail，那么它的 waitStatus 应该是 0
+            // 用CAS将前驱节点的waitStatus设置为Node.SIGNAL(也就是-1)
             pred.compareAndSetWaitStatus(ws, Node.SIGNAL);
         }
         
@@ -2018,6 +2056,8 @@ public abstract class AbstractQueuedSynchronizer extends AbstractOwnableSynchron
      *
      * @return {@code true} if interrupted
      */
+    // 这个方法很简单，因为前面返回true，所以需要挂起线程，这个方法就是负责挂起线程的
+    // 这里用了LockSupport.park(this)来挂起线程，然后就停在这里了，等待被唤醒=======
     // 设置线程进入阻塞状态，并清除线程的中断状态。返回值代表之前线程是否处于阻塞状态
     private final boolean parkAndCheckInterrupt() {
         // 设置线程阻塞（对标记为中断的线程无效）
@@ -2197,6 +2237,7 @@ public abstract class AbstractQueuedSynchronizer extends AbstractOwnableSynchron
          * 该标记指示结点应当被取消，不再参与排队
          * 线程取消了争抢这个锁
          * 如果在线程阻塞期间发生异常的话，会为其所在的结点设置此标记
+         * ps: 半天抢不到锁，不抢了，ReentrantLock是可以指定timeouot的。。。
          */
         static final int CANCELLED = 1;
         /** waitStatus value to indicate successor's thread needs unparking. */
@@ -2265,7 +2306,9 @@ public abstract class AbstractQueuedSynchronizer extends AbstractOwnableSynchron
          * CONDITION for condition nodes.  It is modified using CAS
          * (or when possible, unconditional volatile writes).
          */
-        // 状态码，有CANCELLED/SIGNAL/CONDITION/PROPAGATE四种取值，默认为0
+        // 取值为上面的1、-1、-2、-3，或者0(以后会讲到)
+        // 这么理解，暂时只需要知道如果这个值 大于0 代表此线程取消了等待，
+        //    ps: 半天抢不到锁，不抢了，ReentrantLock是可以指定timeouot的。。。
         volatile int waitStatus;
         
         /**

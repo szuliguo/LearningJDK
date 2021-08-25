@@ -168,6 +168,10 @@ import java.util.concurrent.locks.AbstractQueuedSynchronizer;
  * 初始化锁（同步队列）时，会生产一定数量的许可证
  * 申请锁的过程，可以看做是借出许可证，线程拿到锁的控制权时，许可证总量会减少
  * 释放锁的过程，可以看做是归还许可证，线程丧失锁的控制权时，许可证总量会增加
+ *
+ * 套路解读：创建 Semaphore 实例的时候，需要一个参数 permits，这个基本上可以确定是设置给 AQS 的 state 的，
+ * 然后每个线程调用 acquire 的时候，执行 state = state - 1，release 的时候执行 state = state + 1，
+ * 当然，acquire  的时候，如果 state = 0，说明没有资源了，需要等待其他线程 release。
  */
 public class Semaphore implements Serializable {
     
